@@ -28,6 +28,9 @@ class ChatTUI:
         self.stop_event = threading.Event()
         self.stream_queue = queue.Queue()
         
+        self.all_models = []
+        threading.Thread(target=self.preload_models, daemon=True).start()
+        
         curses.curs_set(1)
         self.stdscr.keypad(True)
         self.stdscr.nodelay(True) # Non-blocking input
@@ -35,6 +38,12 @@ class ChatTUI:
         self.setup_windows()
         self.refresh_chats()
         self.draw_all()
+
+    def preload_models(self):
+        try:
+            self.all_models = api.get_models(self.provider, self.config)
+        except Exception:
+            pass
 
     def init_colors(self):
         curses.start_color()
@@ -82,17 +91,23 @@ class ChatTUI:
         if not self.current_chat_id:
             self.current_chat_id = self.chats[0]['id']
             self.sidebar_idx = 0
+            self.model = self.chats[0]['model']
+            self.config['model'] = self.model
         else:
             # Find the index of the current chat in the updated list
             found = False
             for i, chat in enumerate(self.chats):
                 if chat['id'] == self.current_chat_id:
                     self.sidebar_idx = i
+                    self.model = chat['model'] # Update current model from DB
+                    self.config['model'] = self.model # Update config for API calls
                     found = True
                     break
             if not found:
                 self.current_chat_id = self.chats[0]['id']
                 self.sidebar_idx = 0
+                self.model = self.chats[0]['model']
+                self.config['model'] = self.model
         
         self.messages = [dict(m) for m in self.db.get_messages(self.current_chat_id)]
 
@@ -215,7 +230,7 @@ class ChatTUI:
     def draw_all(self):
         h, w = self.stdscr.getmaxyx()
         self.stdscr.erase()
-        self.stdscr.addstr(h-1, 1, "Ctrl+H: Help | Esc: Exit", curses.A_DIM)
+        self.stdscr.addstr(h-1, 1, f"Model: {self.model} | Ctrl+H: Help | Esc: Exit", curses.A_DIM)
         self.stdscr.noutrefresh()
         
         self.draw_sidebar()
@@ -229,6 +244,7 @@ class ChatTUI:
             ("Tab", "Switch Focus"),
             ("Enter", "Send / Select"),
             ("Ctrl+B", "Toggle Sidebar"),
+            ("Ctrl+G", "Switch Model"),
             ("Ctrl+N", "New Chat"),
             ("Ctrl+D", "Delete Chat"),
             ("Ctrl+H", "Show Help"),
@@ -287,6 +303,95 @@ class ChatTUI:
                 self.stdscr.nodelay(True)
                 curses.curs_set(1)
                 return False
+
+    def show_model_selector(self):
+        h, w = self.stdscr.getmaxyx()
+        win_h, win_w = 20, 60
+        win_y, win_x = (h - win_h) // 2, (w - win_w) // 2
+        win = curses.newwin(win_h, win_w, win_y, win_x)
+        win.keypad(True)
+        win.box()
+        
+        search_text = ""
+        selected_idx = 0
+        scroll_offset = 0
+        
+        if not self.all_models:
+            win.addstr(win_h // 2, (win_w - 10) // 2, "Loading...", curses.A_BOLD)
+            win.refresh()
+            try:
+                self.all_models = api.get_models(self.provider, self.config)
+            except Exception as e:
+                self.show_confirm(f"Error fetching models: {str(e)}")
+                return
+
+        self.stdscr.nodelay(False)
+        curses.curs_set(1)
+        
+        while True:
+            win.erase()
+            win.box()
+            win.addstr(1, 2, " SELECT MODEL ", curses.A_BOLD)
+            win.addstr(2, 2, f"Search: {search_text}")
+            win.hline(3, 1, curses.ACS_HLINE, win_w - 2)
+            
+            filtered_models = [m for m in self.all_models if search_text.lower() in m.lower()]
+            
+            list_h = win_h - 5
+            if selected_idx >= len(filtered_models):
+                selected_idx = max(0, len(filtered_models) - 1)
+            
+            if selected_idx < scroll_offset:
+                scroll_offset = selected_idx
+            elif selected_idx >= scroll_offset + list_h:
+                scroll_offset = selected_idx - list_h + 1
+                
+            for i in range(list_h):
+                idx = i + scroll_offset
+                if idx >= len(filtered_models): break
+                
+                model_name = filtered_models[idx]
+                attr = curses.color_pair(3) if idx == selected_idx else curses.A_NORMAL
+                
+                display_name = model_name
+                if len(display_name) > win_w - 4:
+                    display_name = display_name[:win_w - 7] + "..."
+                
+                win.addstr(4 + i, 2, display_name.ljust(win_w - 4), attr)
+            
+            win.move(2, 10 + len(search_text))
+            win.refresh()
+            
+            try:
+                ch = win.get_wch()
+            except curses.error:
+                continue
+                
+            if ch == '\x1b': # Esc
+                break
+            elif ch in ['\n', '\r', 10, 13]: # Enter
+                if filtered_models:
+                    new_model = filtered_models[selected_idx]
+                    self.model = new_model
+                    self.config['model'] = new_model
+                    if self.current_chat_id:
+                        self.db.update_chat_model(self.current_chat_id, new_model)
+                        self.refresh_chats()
+                    break
+            elif ch == curses.KEY_UP:
+                selected_idx = max(0, selected_idx - 1)
+            elif ch == curses.KEY_DOWN:
+                selected_idx = min(len(filtered_models) - 1, selected_idx + 1)
+            elif ch in [curses.KEY_BACKSPACE, '\x7f', '\x08', 127, 8]:
+                search_text = search_text[:-1]
+                selected_idx = 0
+            elif isinstance(ch, str) and ch.isprintable():
+                search_text += ch
+                selected_idx = 0
+                
+        self.stdscr.nodelay(True)
+        curses.curs_set(1)
+        self.draw_all()
 
     def api_worker(self, messages):
         try:
@@ -389,6 +494,8 @@ class ChatTUI:
                     self.setup_windows()
                 elif ch == '\x08': # Ctrl+H
                     self.show_help()
+                elif ch == '\x07': # Ctrl+G
+                    self.show_model_selector()
                 elif ch == '\x0e': # Ctrl+N
                     self.current_chat_id = self.db.create_chat(self.provider, self.model)
                     self.input_text = ""
@@ -441,7 +548,7 @@ class ChatTUI:
                     elif ch in ['\n', '\r', 10, 13]: # Enter
                         if self.chats:
                             self.current_chat_id = self.chats[self.sidebar_idx]['id']
-                            self.messages = [dict(m) for m in self.db.get_messages(self.current_chat_id)]
+                            self.refresh_chats()
                             self.focus = "input"
             except KeyboardInterrupt:
                 if self.is_thinking:

@@ -55,6 +55,10 @@ class Database:
         self.conn.execute("UPDATE chats SET title = ? WHERE id = ?", (title, chat_id))
         self.conn.commit()
 
+    def update_chat_model(self, chat_id, model):
+        self.conn.execute("UPDATE chats SET model = ? WHERE id = ?", (model, chat_id))
+        self.conn.commit()
+
     def delete_chat(self, chat_id):
         self.conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
         self.conn.commit()

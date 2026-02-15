@@ -56,3 +56,19 @@ def call_ollama(config, messages):
                 yield content
             if data.get("done"):
                 break
+
+def get_models(provider, config):
+    if provider == "openrouter":
+        url = "https://openrouter.ai/api/v1/models"
+        headers = {"Authorization": f"Bearer {config['api_key']}"}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        return [m["id"] for m in data.get("data", [])]
+    elif provider == "ollama":
+        url = f"{config['base_url']}/api/tags"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        return [m["name"] for m in data.get("models", [])]
+    return []
