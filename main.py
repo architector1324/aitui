@@ -14,8 +14,10 @@ DEFAULT_DB_PATH = os.path.expanduser("~/.config/aitui/chats.db")
 def main():
     # Set locale for UTF-8 support
     locale.setlocale(locale.LC_ALL, '')
+
     # Set ESCDELAY before curses initialization for better responsiveness
     os.environ.setdefault('ESCDELAY', '25')
+
     parser = argparse.ArgumentParser(description="Minimalist TUI Chat Bot")
     parser.add_argument("-c", "--config", default=DEFAULT_CONFIG_PATH, help="Path to config file")
     parser.add_argument("-p", "--provider", help="LLM Provider (openrouter/ollama/openai)")
