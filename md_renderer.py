@@ -2,11 +2,32 @@ import curses
 import re
 import textwrap
 
+def render_latex(text):
+    """Converts simple LaTeX expressions to Unicode equivalents."""
+    sup_map = str.maketrans("0123456789+-=()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾")
+    sub_map = str.maketrans("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")
+    
+    # Common LaTeX symbols
+    text = text.replace(r'\times', '×').replace(r'\cdot', '·')
+    text = text.replace(r'\degree', '°').replace(r'\pm', '±')
+    text = text.replace(r'\alpha', 'α').replace(r'\beta', 'β').replace(r'\gamma', 'γ')
+    text = text.replace(r'\pi', 'π').replace(r'\infty', '∞')
+    
+    # Superscripts: ^{...} or ^x
+    text = re.sub(r'\^\{([^}]*)\}', lambda m: m.group(1).translate(sup_map), text)
+    text = re.sub(r'\^([0-9a-zA-Z+-])', lambda m: m.group(1).translate(sup_map), text)
+    
+    # Subscripts: _{...} or _x
+    text = re.sub(r'_\{([^}]*)\}', lambda m: m.group(1).translate(sub_map), text)
+    text = re.sub(r'_([0-9a-zA-Z+-])', lambda m: m.group(1).translate(sub_map), text)
+    
+    return text
+
 def parse_inline(text, base_attr):
-    """Parses inline markdown (bold, italic, code) and returns list of (text, attr)."""
+    """Parses inline markdown (bold, italic, code, latex) and returns list of (text, attr)."""
     segments = []
-    # Combined regex for bold (** or __), italic (* or _), and inline code (`)
-    pattern = re.compile(r'(\*\*.*?\*\*|__.*?__|`.*?`|\*.*?\*|_.*?_)')
+    # Combined regex for bold (** or __), italic (* or _), inline code (`), and latex ($)
+    pattern = re.compile(r'(\*\*.*?\*\*|__.*?__|`.*?`|\*.*?\*|_.*?_|\$.*?\$)')
     
     last_end = 0
     for match in pattern.finditer(text):
@@ -20,6 +41,9 @@ def parse_inline(text, base_attr):
             segments.append((m_text[2:-2], base_attr | curses.A_BOLD))
         elif m_text.startswith('`'):
             segments.append((m_text[1:-1], curses.color_pair(4)))
+        elif m_text.startswith('$'):
+            latex_content = m_text[1:-1]
+            segments.append((render_latex(latex_content), base_attr))
         elif m_text.startswith('*') or m_text.startswith('_'):
             segments.append((m_text[1:-1], base_attr | curses.A_UNDERLINE))
             

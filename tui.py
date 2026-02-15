@@ -130,7 +130,7 @@ class ChatTUI:
             is_focused = (self.focus == "sidebar" and i == self.sidebar_idx)
             attr = curses.A_NORMAL
             if is_focused: attr = curses.color_pair(3)
-            prefix = "* " if is_current else "  "
+            prefix = "• " if is_current else "  "
             title = chat['title']
             if len(title) > self.sidebar_width - 6:
                 title = title[:self.sidebar_width - 9] + "..."
@@ -213,7 +213,7 @@ class ChatTUI:
         self.input_rect.erase()
         self.input_rect.box()
         if self.focus == "input":
-            self.input_rect.addstr(0, 2, " INPUT ", input_attr)
+            self.input_rect.addstr(0, 2, " prompt ", input_attr)
         self.input_rect.noutrefresh()
         
         self.input_win.erase()
