@@ -8,16 +8,19 @@ from db import Database
 import os
 from tui import ChatTUI
 
+DEFAULT_CONFIG_PATH = os.path.expanduser("~/.config/aitui/config.yaml")
+DEFAULT_DB_PATH = os.path.expanduser("~/.config/aitui/chats.db")
+
 def main():
     # Set locale for UTF-8 support
     locale.setlocale(locale.LC_ALL, '')
     # Set ESCDELAY before curses initialization for better responsiveness
     os.environ.setdefault('ESCDELAY', '25')
     parser = argparse.ArgumentParser(description="Minimalist TUI Chat Bot")
-    parser.add_argument("-c", "--config", default="config.yaml", help="Path to config file")
+    parser.add_argument("-c", "--config", default=DEFAULT_CONFIG_PATH, help="Path to config file")
     parser.add_argument("-p", "--provider", help="LLM Provider (openrouter/ollama)")
     parser.add_argument("-m", "--model", help="Model name")
-    parser.add_argument("-d", "--db", default="chats.db", help="Path to SQLite database")
+    parser.add_argument("-d", "--db", default=DEFAULT_DB_PATH, help="Path to SQLite database")
     args = parser.parse_args()
 
     db_inst = Database(args.db)
