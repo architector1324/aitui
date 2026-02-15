@@ -18,7 +18,7 @@ def main():
     os.environ.setdefault('ESCDELAY', '25')
     parser = argparse.ArgumentParser(description="Minimalist TUI Chat Bot")
     parser.add_argument("-c", "--config", default=DEFAULT_CONFIG_PATH, help="Path to config file")
-    parser.add_argument("-p", "--provider", help="LLM Provider (openrouter/ollama)")
+    parser.add_argument("-p", "--provider", help="LLM Provider (openrouter/ollama/openai)")
     parser.add_argument("-m", "--model", help="Model name")
     parser.add_argument("-d", "--db", default=DEFAULT_DB_PATH, help="Path to SQLite database")
     args = parser.parse_args()
@@ -42,6 +42,9 @@ def main():
         if provider == "ollama":
             provider_config['model'] = "gemma3"
             provider_config['base_url'] = "http://localhost:11434"
+        elif provider == "openai":
+            provider_config['model'] = "gpt-4o"
+            provider_config['api_url'] = "https://api.openai.com/v1"
         else:
             print(f"Error: No model specified for provider {provider}")
             return
@@ -49,7 +52,7 @@ def main():
     db_inst.init_db()
     
     def start_tui(stdscr):
-        app = ChatTUI(stdscr, provider, provider_config['model'], provider_config, db_inst)
+        app = ChatTUI(stdscr, provider, provider_config['model'], config, db_inst)
         app.run()
 
     try:

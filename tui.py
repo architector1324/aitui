@@ -42,7 +42,16 @@ class ChatTUI:
 
     def preload_models(self):
         try:
-            self.all_models = api.get_models(self.provider, self.config)
+            self.all_models = []
+            # Try to fetch models for all known providers in config
+            for p in ["openrouter", "ollama", "openai"]:
+                p_config = self.config.get(p)
+                if p_config:
+                    try:
+                        models = api.get_models(p, p_config)
+                        self.all_models.extend(models)
+                    except Exception:
+                        continue
         except Exception:
             pass
 
@@ -96,7 +105,7 @@ class ChatTUI:
             self.current_chat_id = self.chats[0]['id']
             self.sidebar_idx = 0
             self.model = self.chats[0]['model']
-            self.config['model'] = self.model
+            self.provider = self.chats[0]['provider']
         else:
             # Find the index of the current chat in the updated list
             found = False
@@ -104,14 +113,14 @@ class ChatTUI:
                 if chat['id'] == self.current_chat_id:
                     self.sidebar_idx = i
                     self.model = chat['model'] # Update current model from DB
-                    self.config['model'] = self.model # Update config for API calls
+                    self.provider = chat['provider']
                     found = True
                     break
             if not found:
                 self.current_chat_id = self.chats[0]['id']
                 self.sidebar_idx = 0
                 self.model = self.chats[0]['model']
-                self.config['model'] = self.model
+                self.provider = self.chats[0]['provider']
         
         self.messages = [dict(m) for m in self.db.get_messages(self.current_chat_id)]
 
@@ -157,8 +166,8 @@ class ChatTUI:
                 header = "User"
                 header_x = margin + max_msg_w - len(header)
             else:
-                model_name = msg.get('model') or self.model
-                header = f"{model_name}"
+                msg_model = msg.get('model') or self.model
+                header = f"{msg_model}"
                 header_x = margin
             
             all_lines.append(([(header, color | curses.A_BOLD)], header_x))
@@ -375,11 +384,17 @@ class ChatTUI:
                 break
             elif ch in ['\n', '\r', 10, 13]: # Enter
                 if filtered_models:
-                    new_model = filtered_models[selected_idx]
-                    self.model = new_model
-                    self.config['model'] = new_model
+                    selected_model = filtered_models[selected_idx]
+                    if ":" in selected_model:
+                        new_provider, new_model = selected_model.split(":", 1)
+                        self.provider = new_provider
+                        self.model = new_model
+                        # Note: self.config is now the full config
+                    else:
+                        self.model = selected_model
+                    
                     if self.current_chat_id:
-                        self.db.update_chat_model(self.current_chat_id, new_model)
+                        self.db.update_chat_model(self.current_chat_id, self.model, self.provider)
                         self.refresh_chats()
                     break
             elif ch == curses.KEY_UP:
@@ -399,7 +414,10 @@ class ChatTUI:
 
     def api_worker(self, messages):
         try:
-            for chunk in api.call_llm(self.provider, self.config, messages):
+            p_config = self.config.get(self.provider, {})
+            # Ensure model is in p_config for the API call
+            p_config['model'] = self.model
+            for chunk in api.call_llm(self.provider, p_config, messages):
                 if self.stop_event.is_set():
                     self.stream_queue.put(("cancelled", None))
                     return
@@ -413,7 +431,9 @@ class ChatTUI:
             prompt = f"Create a very short title (max 5 words) for a conversation that starts with: '{first_message}'. Respond ONLY with the title text, no quotes or punctuation."
             messages = [{"role": "user", "content": prompt}]
             title = ""
-            for chunk in api.call_llm(self.provider, self.config, messages):
+            p_config = self.config.get(self.provider, {})
+            p_config['model'] = self.model
+            for chunk in api.call_llm(self.provider, p_config, messages):
                 title += chunk
             title = title.strip().strip('"').strip("'").strip()
             if title:
@@ -431,11 +451,11 @@ class ChatTUI:
                         msg_type, data = self.stream_queue.get_nowait()
                         if msg_type == "chunk":
                             if not self.messages or self.messages[-1]['role'] != 'assistant':
-                                self.messages.append({'role': 'assistant', 'content': '', 'model': self.model})
+                                self.messages.append({'role': 'assistant', 'content': '', 'provider': self.provider, 'model': self.model})
                             self.messages[-1]['content'] += data
                         elif msg_type == "done":
                             self.is_thinking = False
-                            self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'], self.model)
+                            self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'], self.provider, self.model)
                             if len(self.messages) == 2: # First exchange
                                 threading.Thread(target=self.title_worker, args=(self.current_chat_id, self.messages[0]['content']), daemon=True).start()
                         elif msg_type == "title_updated":
@@ -444,12 +464,12 @@ class ChatTUI:
                             self.is_thinking = False
                             if self.messages and self.messages[-1]['role'] == 'assistant':
                                 self.messages[-1]['content'] += " [Cancelled]"
-                                self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'], self.model)
+                                self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'], self.provider, self.model)
                         elif msg_type == "error":
                             self.is_thinking = False
                             error_msg = f"Error: {data}"
-                            self.messages.append({'role': 'assistant', 'content': error_msg, 'model': self.model})
-                            self.db.add_message(self.current_chat_id, 'assistant', error_msg, self.model)
+                            self.messages.append({'role': 'assistant', 'content': error_msg, 'provider': self.provider, 'model': self.model})
+                            self.db.add_message(self.current_chat_id, 'assistant', error_msg, self.provider, self.model)
                 except queue.Empty:
                     pass
 
@@ -516,8 +536,8 @@ class ChatTUI:
                     if ch in ['\n', '\r', 10, 13]: # Enter
                         if self.input_text.strip() and not self.is_thinking:
                             user_text = self.input_text.strip()
-                            self.db.add_message(self.current_chat_id, 'user', user_text, self.model)
-                            self.messages.append({'role': 'user', 'content': user_text, 'model': self.model})
+                            self.db.add_message(self.current_chat_id, 'user', user_text, self.provider, self.model)
+                            self.messages.append({'role': 'user', 'content': user_text, 'provider': self.provider, 'model': self.model})
                             self.input_text = ""
                             self.cursor_pos = 0
                             self.is_thinking = True
