@@ -13,7 +13,7 @@ class ChatTUI:
         self.db = db
         
         self.sidebar_width = 25
-        self.show_sidebar = True
+        self.show_sidebar = False
         self.current_chat_id = None
         self.chats = []
         self.messages = []
@@ -21,6 +21,8 @@ class ChatTUI:
         self.sidebar_idx = 0
         self.input_text = ""
         self.cursor_pos = 0
+        self.scroll_offset = 0
+        self.auto_scroll = True
         
         self.is_thinking = False
         self.stop_event = threading.Event()
@@ -120,35 +122,67 @@ class ChatTUI:
         self.chat_win.erase()
         self.chat_win.box()
         h, w = self.chat_win.getmaxyx()
-        y = 1
         
-        # Simple scroll-to-bottom logic: only draw what fits from the end
-        all_lines = []
+        # Roomy Split: 50% width centered area
+        # margin = (100% - 50%) / 2 = 25%
+        margin = int(w * 0.25)
+        max_msg_w = int(w * 0.50)
+        all_lines = [] # List of (text, x_pos, color, is_bold)
+        
         for msg in self.messages:
-            role = msg['role'].upper()
-            color = curses.color_pair(1) if msg['role'] == 'user' else curses.color_pair(2)
-            prefix = f"[{role}]: "
-            max_w = w - 15
+            is_user = msg['role'] == 'user'
+            color = curses.color_pair(1) if is_user else curses.color_pair(2)
             
-            content = msg['content']
-            wrapped = textwrap.wrap(content, width=max_w)
-            
-            if not wrapped: # Handle empty content during streaming
-                all_lines.append((prefix, color, ""))
+            # Header
+            if is_user:
+                header = "User"
+                header_x = margin + max_msg_w - len(header)
             else:
-                for i, line in enumerate(wrapped):
-                    all_lines.append((prefix if i == 0 else " " * len(prefix), color, line))
-            all_lines.append(("", 0, "")) # Spacer
+                header = f"{self.model}"
+                header_x = margin
+            
+            all_lines.append((header, header_x, color, True))
+            
+            # Content with line break support
+            content = msg['content']
+            lines = content.split('\n')
+            wrapped_lines = []
+            for line in lines:
+                if not line.strip():
+                    wrapped_lines.append("")
+                else:
+                    wrapped_lines.extend(textwrap.wrap(line, width=max_msg_w))
+            
+            for line in wrapped_lines:
+                if is_user:
+                    x = margin + max_msg_w - len(line)
+                else:
+                    x = margin
+                all_lines.append((line, x, curses.A_NORMAL, False))
+            
+            all_lines.append(("", 0, 0, False)) # Spacer
 
-        # Only show lines that fit in the window
-        visible_lines = all_lines[-(h-2):] if len(all_lines) > (h-2) else all_lines
+        # Handle scrolling
+        max_visible = h - 2
+        max_scroll = max(0, len(all_lines) - max_visible)
         
-        for prefix, color, line in visible_lines:
+        if self.auto_scroll:
+            self.scroll_offset = max_scroll
+        else:
+            self.scroll_offset = min(self.scroll_offset, max_scroll)
+        
+        visible_lines = all_lines[self.scroll_offset : self.scroll_offset + max_visible]
+        
+        for i, (line, x, attr, is_bold) in enumerate(visible_lines):
+            y = i + 1
             if y >= h - 1: break
-            if prefix.strip():
-                self.chat_win.addstr(y, 1, prefix, color | curses.A_BOLD)
-            self.chat_win.addstr(y, 15, line)
-            y += 1
+            final_attr = attr
+            if is_bold: final_attr |= curses.A_BOLD
+            try:
+                self.chat_win.addstr(y, x, line, final_attr)
+            except curses.error:
+                pass
+
             
         if self.is_thinking:
             self.chat_win.addstr(h-1, 2, " Thinking... ", curses.A_REVERSE)
@@ -300,6 +334,8 @@ class ChatTUI:
                 
                 ch = self.input_win.getch()
                 if ch == -1:
+                    # Check if we should re-enable auto-scroll if user scrolled to bottom
+                    # This is handled in draw_messages logic mostly, but we can be explicit
                     curses.napms(10)
                     continue
                 
@@ -310,6 +346,24 @@ class ChatTUI:
                         self.focus = "sidebar" if self.focus == "input" else "input"
                     else:
                         self.focus = "input"
+                elif ch == curses.KEY_PPAGE: # Page Up
+                    self.auto_scroll = False
+                    self.scroll_offset = max(0, self.scroll_offset - (self.chat_win.getmaxyx()[0] // 2))
+                elif ch == curses.KEY_NPAGE: # Page Down
+                    self.scroll_offset += (self.chat_win.getmaxyx()[0] // 2)
+                elif ch == 339 or ch == 566: # Shift + Up
+                    self.auto_scroll = False
+                    self.scroll_offset = max(0, self.scroll_offset - 1)
+                elif ch == 338 or ch == 525: # Shift + Down
+                    self.scroll_offset += 1
+                elif ch == curses.KEY_UP and self.focus == "input":
+                    # Only scroll if we are not at the top
+                    if self.scroll_offset > 0:
+                        self.auto_scroll = False
+                        self.scroll_offset -= 1
+                elif ch == curses.KEY_DOWN and self.focus == "input":
+                    self.scroll_offset += 1
+
                 elif ch == curses.KEY_RESIZE:
                     curses.update_lines_cols()
                     self.setup_windows()
