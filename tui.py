@@ -3,6 +3,7 @@ import api
 import textwrap
 import threading
 import queue
+import md_renderer
 
 class ChatTUI:
     def __init__(self, stdscr, provider, model, config, db):
@@ -51,6 +52,9 @@ class ChatTUI:
         curses.init_pair(1, curses.COLOR_CYAN, -1)
         curses.init_pair(2, curses.COLOR_GREEN, -1)
         curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_WHITE)
+        curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_BLACK) # Code blocks
+        curses.init_pair(5, curses.COLOR_YELLOW, -1) # Headers
+        curses.init_pair(6, curses.COLOR_BLUE, -1) # Tables/Borders
 
     def setup_windows(self):
         h, w = self.stdscr.getmaxyx()
@@ -142,7 +146,7 @@ class ChatTUI:
         # margin = (100% - 50%) / 2 = 25%
         margin = int(w * 0.25)
         max_msg_w = int(w * 0.50)
-        all_lines = [] # List of (text, x_pos, color, is_bold)
+        all_lines = [] # List of (segments, x_pos)
         
         for msg in self.messages:
             is_user = msg['role'] == 'user'
@@ -157,26 +161,22 @@ class ChatTUI:
                 header = f"{model_name}"
                 header_x = margin
             
-            all_lines.append((header, header_x, color, True))
+            all_lines.append(([(header, color | curses.A_BOLD)], header_x))
             
-            # Content with line break support
+            # Content with Markdown support
             content = msg['content']
-            lines = content.split('\n')
-            wrapped_lines = []
-            for line in lines:
-                if not line.strip():
-                    wrapped_lines.append("")
-                else:
-                    wrapped_lines.extend(textwrap.wrap(line, width=max_msg_w))
+            md_lines = md_renderer.render_markdown(content, max_msg_w, curses.A_NORMAL)
             
-            for line in wrapped_lines:
+            for line_segments in md_lines:
+                # Calculate line width for alignment
+                line_w = sum(len(text) for text, attr in line_segments)
                 if is_user:
-                    x = margin + max_msg_w - len(line)
+                    x = margin + max_msg_w - line_w
                 else:
                     x = margin
-                all_lines.append((line, x, curses.A_NORMAL, False))
+                all_lines.append((line_segments, x))
             
-            all_lines.append(("", 0, 0, False)) # Spacer
+            all_lines.append(([("", 0)], 0)) # Spacer
 
         # Handle scrolling
         max_visible = h - 2
@@ -189,15 +189,18 @@ class ChatTUI:
         
         visible_lines = all_lines[self.scroll_offset : self.scroll_offset + max_visible]
         
-        for i, (line, x, attr, is_bold) in enumerate(visible_lines):
+        for i, (segments, x) in enumerate(visible_lines):
             y = i + 1
             if y >= h - 1: break
-            final_attr = attr
-            if is_bold: final_attr |= curses.A_BOLD
-            try:
-                self.chat_win.addstr(y, x, line, final_attr)
-            except curses.error:
-                pass
+            
+            curr_x = x
+            for text, attr in segments:
+                if not text: continue
+                try:
+                    self.chat_win.addstr(y, curr_x, text, attr)
+                    curr_x += len(text)
+                except curses.error:
+                    pass
 
             
         if self.is_thinking:
