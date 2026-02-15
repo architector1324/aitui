@@ -44,7 +44,10 @@ def main():
         app = ChatTUI(stdscr, provider, provider_config['model'], provider_config, db_inst)
         app.run()
 
-    curses.wrapper(start_tui)
+    try:
+        curses.wrapper(start_tui)
+    except KeyboardInterrupt:
+        pass
 
 if __name__ == "__main__":
     main()

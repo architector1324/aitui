@@ -23,6 +23,7 @@ class ChatTUI:
         self.cursor_pos = 0
         
         self.is_thinking = False
+        self.stop_event = threading.Event()
         self.stream_queue = queue.Queue()
         
         curses.curs_set(1)
@@ -44,6 +45,16 @@ class ChatTUI:
         h, w = self.stdscr.getmaxyx()
         sidebar_w = self.sidebar_width if self.show_sidebar else 0
         
+        # Clear existing windows if they exist to avoid memory leaks/artifacts
+        for win_attr in ['sidebar_win', 'chat_win', 'input_rect', 'input_win']:
+            win = getattr(self, win_attr, None)
+            if win:
+                try:
+                    win.erase()
+                    setattr(self, win_attr, None)
+                except curses.error:
+                    pass
+
         if self.show_sidebar:
             self.sidebar_win = curses.newwin(h - 1, sidebar_w, 0, 0)
         else:
@@ -55,6 +66,7 @@ class ChatTUI:
         self.input_rect = curses.newwin(3, chat_w, h - 4, sidebar_w)
         self.input_win = curses.newwin(1, chat_w - 2, h - 3, sidebar_w + 1)
         self.input_win.keypad(True)
+        self.input_win.nodelay(True)
 
     def refresh_chats(self):
         self.chats = self.db.get_chats()
@@ -245,6 +257,9 @@ class ChatTUI:
     def api_worker(self, messages):
         try:
             for chunk in api.call_llm(self.provider, self.config, messages):
+                if self.stop_event.is_set():
+                    self.stream_queue.put(("cancelled", None))
+                    return
                 self.stream_queue.put(("chunk", chunk))
             self.stream_queue.put(("done", None))
         except Exception as e:
@@ -252,100 +267,119 @@ class ChatTUI:
 
     def run(self):
         while True:
-            # Process streaming queue
             try:
-                while True:
-                    msg_type, data = self.stream_queue.get_nowait()
-                    if msg_type == "chunk":
-                        if not self.messages or self.messages[-1]['role'] != 'assistant':
-                            self.messages.append({'role': 'assistant', 'content': ''})
-                        self.messages[-1]['content'] += data
-                    elif msg_type == "done":
-                        self.is_thinking = False
-                        self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'])
-                        if len(self.messages) <= 2: # First exchange
-                            title = self.messages[0]['content'][:20]
-                            self.db.update_chat_title(self.current_chat_id, title)
-                            self.refresh_chats()
-                    elif msg_type == "error":
-                        self.is_thinking = False
-                        error_msg = f"Error: {data}"
-                        self.messages.append({'role': 'assistant', 'content': error_msg})
-                        self.db.add_message(self.current_chat_id, 'assistant', error_msg)
-                    self.draw_all()
-            except queue.Empty:
-                pass
+                # Process streaming queue
+                try:
+                    while True:
+                        msg_type, data = self.stream_queue.get_nowait()
+                        if msg_type == "chunk":
+                            if not self.messages or self.messages[-1]['role'] != 'assistant':
+                                self.messages.append({'role': 'assistant', 'content': ''})
+                            self.messages[-1]['content'] += data
+                        elif msg_type == "done":
+                            self.is_thinking = False
+                            self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'])
+                            if len(self.messages) <= 2: # First exchange
+                                title = self.messages[0]['content'][:20]
+                                self.db.update_chat_title(self.current_chat_id, title)
+                                self.refresh_chats()
+                        elif msg_type == "cancelled":
+                            self.is_thinking = False
+                            if self.messages and self.messages[-1]['role'] == 'assistant':
+                                self.messages[-1]['content'] += " [Cancelled]"
+                                self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'])
+                        elif msg_type == "error":
+                            self.is_thinking = False
+                            error_msg = f"Error: {data}"
+                            self.messages.append({'role': 'assistant', 'content': error_msg})
+                            self.db.add_message(self.current_chat_id, 'assistant', error_msg)
+                except queue.Empty:
+                    pass
 
-            self.draw_all()
-            
-            ch = self.input_win.getch()
-            if ch == -1:
-                curses.napms(10)
-                continue
-            
-            if ch == 27: # Esc
-                if self.show_confirm("Exit application?"): break
-            elif ch == 9: # Tab
-                if self.show_sidebar:
-                    self.focus = "sidebar" if self.focus == "input" else "input"
-                else:
-                    self.focus = "input"
-            elif ch == 2: # Ctrl+B
-                self.show_sidebar = not self.show_sidebar
-                if not self.show_sidebar: self.focus = "input"
-                self.setup_windows()
-            elif ch == 8: # Ctrl+H
-                self.show_help()
-            elif ch == 14: # Ctrl+N
-                self.current_chat_id = self.db.create_chat(self.provider, self.model)
-                self.input_text = ""
-                self.cursor_pos = 0
-                self.refresh_chats()
-            elif ch == 4: # Ctrl+D
-                target_id = self.chats[self.sidebar_idx]['id'] if self.focus == "sidebar" else self.current_chat_id
-                if target_id and self.show_confirm("Delete this chat?"):
-                    self.db.delete_chat(target_id)
-                    self.current_chat_id = None
-                    self.refresh_chats()
-            
-            elif self.focus == "input":
-                if ch in [10, 13]: # Enter
-                    if self.input_text.strip() and not self.is_thinking:
-                        user_text = self.input_text.strip()
-                        self.db.add_message(self.current_chat_id, 'user', user_text)
-                        self.messages.append({'role': 'user', 'content': user_text})
-                        self.input_text = ""
-                        self.cursor_pos = 0
-                        self.is_thinking = True
-                        
-                        threading.Thread(target=self.api_worker, args=(self.messages,), daemon=True).start()
-                        
-                elif ch in [curses.KEY_BACKSPACE, 127, 8]:
-                    if self.cursor_pos > 0:
-                        self.input_text = self.input_text[:self.cursor_pos-1] + self.input_text[self.cursor_pos:]
-                        self.cursor_pos -= 1
-                elif ch == curses.KEY_DC: # Delete
-                    if self.cursor_pos < len(self.input_text):
-                        self.input_text = self.input_text[:self.cursor_pos] + self.input_text[self.cursor_pos+1:]
-                elif ch == curses.KEY_LEFT:
-                    self.cursor_pos = max(0, self.cursor_pos - 1)
-                elif ch == curses.KEY_RIGHT:
-                    self.cursor_pos = min(len(self.input_text), self.cursor_pos + 1)
-                elif ch == curses.KEY_HOME:
-                    self.cursor_pos = 0
-                elif ch == curses.KEY_END:
-                    self.cursor_pos = len(self.input_text)
-                elif 32 <= ch <= 126: # ASCII
-                    self.input_text = self.input_text[:self.cursor_pos] + chr(ch) + self.input_text[self.cursor_pos:]
-                    self.cursor_pos += 1
-            
-            elif self.focus == "sidebar":
-                if ch == curses.KEY_UP:
-                    self.sidebar_idx = max(0, self.sidebar_idx - 1)
-                elif ch == curses.KEY_DOWN:
-                    self.sidebar_idx = min(len(self.chats) - 1, self.sidebar_idx + 1)
-                elif ch in [10, 13]: # Enter
-                    if self.chats:
-                        self.current_chat_id = self.chats[self.sidebar_idx]['id']
-                        self.messages = [dict(m) for m in self.db.get_messages(self.current_chat_id)]
+                self.draw_all()
+                
+                ch = self.input_win.getch()
+                if ch == -1:
+                    curses.napms(10)
+                    continue
+                
+                if ch == 27: # Esc
+                    if self.show_confirm("Exit application?"): break
+                elif ch == 9: # Tab
+                    if self.show_sidebar:
+                        self.focus = "sidebar" if self.focus == "input" else "input"
+                    else:
                         self.focus = "input"
+                elif ch == curses.KEY_RESIZE:
+                    curses.update_lines_cols()
+                    self.setup_windows()
+                    self.draw_all()
+                elif ch == 2: # Ctrl+B
+                    self.show_sidebar = not self.show_sidebar
+                    if not self.show_sidebar: self.focus = "input"
+                    self.setup_windows()
+                elif ch == 8: # Ctrl+H
+                    self.show_help()
+                elif ch == 14: # Ctrl+N
+                    self.current_chat_id = self.db.create_chat(self.provider, self.model)
+                    self.input_text = ""
+                    self.cursor_pos = 0
+                    self.refresh_chats()
+                elif ch == 4: # Ctrl+D
+                    target_id = self.chats[self.sidebar_idx]['id'] if self.focus == "sidebar" else self.current_chat_id
+                    if target_id and self.show_confirm("Delete this chat?"):
+                        self.db.delete_chat(target_id)
+                        self.current_chat_id = None
+                        self.refresh_chats()
+                
+                elif self.focus == "input":
+                    if ch in [10, 13]: # Enter
+                        if self.input_text.strip() and not self.is_thinking:
+                            user_text = self.input_text.strip()
+                            self.db.add_message(self.current_chat_id, 'user', user_text)
+                            self.messages.append({'role': 'user', 'content': user_text})
+                            self.input_text = ""
+                            self.cursor_pos = 0
+                            self.is_thinking = True
+                            self.stop_event.clear()
+                            
+                            threading.Thread(target=self.api_worker, args=(self.messages,), daemon=True).start()
+                            
+                    elif ch in [curses.KEY_BACKSPACE, 127, 8]:
+                        if self.cursor_pos > 0:
+                            self.input_text = self.input_text[:self.cursor_pos-1] + self.input_text[self.cursor_pos:]
+                            self.cursor_pos -= 1
+                    elif ch == curses.KEY_DC: # Delete
+                        if self.cursor_pos < len(self.input_text):
+                            self.input_text = self.input_text[:self.cursor_pos] + self.input_text[self.cursor_pos+1:]
+                    elif ch == curses.KEY_LEFT:
+                        self.cursor_pos = max(0, self.cursor_pos - 1)
+                    elif ch == curses.KEY_RIGHT:
+                        self.cursor_pos = min(len(self.input_text), self.cursor_pos + 1)
+                    elif ch == curses.KEY_HOME:
+                        self.cursor_pos = 0
+                    elif ch == curses.KEY_END:
+                        self.cursor_pos = len(self.input_text)
+                    elif 32 <= ch <= 126: # ASCII
+                        self.input_text = self.input_text[:self.cursor_pos] + chr(ch) + self.input_text[self.cursor_pos:]
+                        self.cursor_pos += 1
+                
+                elif self.focus == "sidebar":
+                    if ch == curses.KEY_UP:
+                        self.sidebar_idx = max(0, self.sidebar_idx - 1)
+                    elif ch == curses.KEY_DOWN:
+                        self.sidebar_idx = min(len(self.chats) - 1, self.sidebar_idx + 1)
+                    elif ch in [10, 13]: # Enter
+                        if self.chats:
+                            self.current_chat_id = self.chats[self.sidebar_idx]['id']
+                            self.messages = [dict(m) for m in self.db.get_messages(self.current_chat_id)]
+                            self.focus = "input"
+            except KeyboardInterrupt:
+                if self.is_thinking:
+                    self.stop_event.set()
+                elif self.input_text:
+                    self.input_text = ""
+                    self.cursor_pos = 0
+                else:
+                    if self.show_confirm("Exit application?"):
+                        break
