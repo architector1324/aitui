@@ -12,6 +12,11 @@ def render_latex(text):
     text = text.replace(r'\degree', '°').replace(r'\pm', '±')
     text = text.replace(r'\alpha', 'α').replace(r'\beta', 'β').replace(r'\gamma', 'γ')
     text = text.replace(r'\pi', 'π').replace(r'\infty', '∞')
+    text = text.replace(r'\approx', '≈').replace(r'\neq', '≠')
+    text = text.replace(r'\le', '≤').replace(r'\leq', '≤')
+    text = text.replace(r'\ge', '≥').replace(r'\geq', '≥')
+    text = text.replace(r'\to', '→').replace(r'\rightarrow', '→')
+    text = text.replace(r'\Delta', 'Δ').replace(r'\mu', 'μ')
     
     # Superscripts: ^{...} or ^x
     text = re.sub(r'\^\{([^}]*)\}', lambda m: m.group(1).translate(sup_map), text)
@@ -20,14 +25,18 @@ def render_latex(text):
     # Subscripts: _{...} or _x
     text = re.sub(r'_\{([^}]*)\}', lambda m: m.group(1).translate(sub_map), text)
     text = re.sub(r'_([0-9a-zA-Z+-])', lambda m: m.group(1).translate(sub_map), text)
+
+    # HTML-style superscripts/subscripts
+    text = re.sub(r'<sup>([^<]*)</sup>', lambda m: m.group(1).translate(sup_map), text)
+    text = re.sub(r'<sub>([^<]*)</sub>', lambda m: m.group(1).translate(sub_map), text)
     
     return text
 
 def parse_inline(text, base_attr):
     """Parses inline markdown (bold, italic, code, latex) and returns list of (text, attr)."""
     segments = []
-    # Combined regex for bold (** or __), italic (* or _), inline code (`), and latex ($)
-    pattern = re.compile(r'(\*\*.*?\*\*|__.*?__|`.*?`|\*.*?\*|_.*?_|\$.*?\$)')
+    # Combined regex for bold (** or __), italic (* or _), inline code (`), latex ($), and HTML sup/sub
+    pattern = re.compile(r'(\*\*.*?\*\*|__.*?__|`.*?`|\*.*?\*|_.*?_|\$.*?\$|<sup>.*?</sup>|<sub>.*?</sub>)')
     
     last_end = 0
     for match in pattern.finditer(text):
@@ -44,6 +53,8 @@ def parse_inline(text, base_attr):
         elif m_text.startswith('$'):
             latex_content = m_text[1:-1]
             segments.append((render_latex(latex_content), base_attr))
+        elif m_text.startswith('<sup>') or m_text.startswith('<sub>'):
+            segments.append((render_latex(m_text), base_attr))
         elif m_text.startswith('*') or m_text.startswith('_'):
             segments.append((m_text[1:-1], base_attr | curses.A_UNDERLINE))
             
