@@ -22,6 +22,7 @@ class Database:
             chat_id INTEGER NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
             content TEXT NOT NULL,
+            reasoning TEXT,
             provider TEXT,
             model TEXT,
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
@@ -42,14 +43,14 @@ class Database:
 
     def get_messages(self, chat_id):
         return self.conn.execute(
-            "SELECT role, content, provider, model FROM messages WHERE chat_id = ? ORDER BY id ASC",
+            "SELECT role, content, reasoning, provider, model FROM messages WHERE chat_id = ? ORDER BY id ASC",
             (chat_id,)
         ).fetchall()
 
-    def add_message(self, chat_id, role, content, provider, model):
+    def add_message(self, chat_id, role, content, provider, model, reasoning=None):
         self.conn.execute(
-            "INSERT INTO messages (chat_id, role, content, provider, model) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, role, content, provider, model)
+            "INSERT INTO messages (chat_id, role, content, reasoning, provider, model) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, role, content, reasoning, provider, model)
         )
         self.conn.commit()
 

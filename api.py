@@ -37,9 +37,13 @@ def call_openrouter(config, messages):
                     break
                 try:
                     data = json.loads(data_str)
-                    content = data["choices"][0]["delta"].get("content", "")
+                    delta = data["choices"][0]["delta"]
+                    reasoning = delta.get("reasoning")
+                    if reasoning:
+                        yield ("reasoning", reasoning)
+                    content = delta.get("content")
                     if content:
-                        yield content
+                        yield ("content", content)
                 except json.JSONDecodeError:
                     continue
 
@@ -59,9 +63,13 @@ def call_ollama(config, messages):
     for line in response.iter_lines():
         if line:
             data = json.loads(line.decode('utf-8'))
-            content = data.get("message", {}).get("content", "")
+            message = data.get("message", {})
+            reasoning = message.get("reasoning")
+            if reasoning:
+                yield ("reasoning", reasoning)
+            content = message.get("content")
             if content:
-                yield content
+                yield ("content", content)
             if data.get("done"):
                 break
 
@@ -93,9 +101,13 @@ def call_openai(config, messages):
                 try:
                     data = json.loads(data_str)
                     if data.get("choices") and len(data["choices"]) > 0:
-                        content = data["choices"][0]["delta"].get("content", "")
+                        delta = data["choices"][0]["delta"]
+                        reasoning = delta.get("reasoning_content")
+                        if reasoning:
+                            yield ("reasoning", reasoning)
+                        content = delta.get("content")
                         if content:
-                            yield content
+                            yield ("content", content)
                 except json.JSONDecodeError:
                     continue
 

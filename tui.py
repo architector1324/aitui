@@ -64,6 +64,7 @@ class ChatTUI:
         curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_BLACK) # Code blocks
         curses.init_pair(5, curses.COLOR_YELLOW, -1) # Headers
         curses.init_pair(6, curses.COLOR_BLUE, -1) # Tables/Borders
+        curses.init_pair(7, 244, -1) # Grey/Dim text (using xterm 256 color if available)
 
     def setup_windows(self):
         h, w = self.stdscr.getmaxyx()
@@ -122,7 +123,13 @@ class ChatTUI:
                 self.model = self.chats[0]['model']
                 self.provider = self.chats[0]['provider']
         
-        self.messages = [dict(m) for m in self.db.get_messages(self.current_chat_id)]
+        self.messages = []
+        for m in self.db.get_messages(self.current_chat_id):
+            msg_dict = dict(m)
+            # Ensure reasoning is at least an empty string if it's None in DB
+            if msg_dict.get('reasoning') is None:
+                msg_dict['reasoning'] = ''
+            self.messages.append(msg_dict)
 
     def draw_sidebar(self):
         if not self.show_sidebar or not self.sidebar_win:
@@ -172,18 +179,32 @@ class ChatTUI:
             
             all_lines.append(([(header, color | curses.A_BOLD)], header_x))
             
+            # Reasoning (Thinking)
+            reasoning = msg.get('reasoning', '')
+            if reasoning:
+                is_last = (msg == self.messages[-1])
+                if is_last and self.is_thinking:
+                    # Show full reasoning while generating
+                    md_lines = md_renderer.render_markdown(reasoning, max_msg_w, curses.color_pair(7))
+                    for line_segments in md_lines:
+                        all_lines.append((line_segments, margin))
+                else:
+                    # Show collapsed "think" label after generation
+                    all_lines.append(([("think", curses.color_pair(7) | curses.A_ITALIC)], margin))
+
             # Content with Markdown support
             content = msg['content']
-            md_lines = md_renderer.render_markdown(content, max_msg_w, curses.A_NORMAL)
-            
-            for line_segments in md_lines:
-                # Calculate line width for alignment
-                line_w = sum(len(text) for text, attr in line_segments)
-                if is_user:
-                    x = margin + max_msg_w - line_w
-                else:
-                    x = margin
-                all_lines.append((line_segments, x))
+            if content:
+                md_lines = md_renderer.render_markdown(content, max_msg_w, curses.A_NORMAL)
+                
+                for line_segments in md_lines:
+                    # Calculate line width for alignment
+                    line_w = sum(len(text) for text, attr in line_segments)
+                    if is_user:
+                        x = margin + max_msg_w - line_w
+                    else:
+                        x = margin
+                    all_lines.append((line_segments, x))
             
             all_lines.append(([("", 0)], 0)) # Spacer
 
@@ -417,11 +438,11 @@ class ChatTUI:
             p_config = self.config.get(self.provider, {})
             # Ensure model is in p_config for the API call
             p_config['model'] = self.model
-            for chunk in api.call_llm(self.provider, p_config, messages):
+            for chunk_type, chunk_content in api.call_llm(self.provider, p_config, messages):
                 if self.stop_event.is_set():
                     self.stream_queue.put(("cancelled", None))
                     return
-                self.stream_queue.put(("chunk", chunk))
+                self.stream_queue.put((chunk_type, chunk_content))
             self.stream_queue.put(("done", None))
         except Exception as e:
             self.stream_queue.put(("error", str(e)))
@@ -433,8 +454,9 @@ class ChatTUI:
             title = ""
             p_config = self.config.get(self.provider, {})
             p_config['model'] = self.model
-            for chunk in api.call_llm(self.provider, p_config, messages):
-                title += chunk
+            for chunk_type, chunk_content in api.call_llm(self.provider, p_config, messages):
+                if chunk_type == "content":
+                    title += chunk_content
             title = title.strip().strip('"').strip("'").strip()
             if title:
                 self.db.update_chat_title(chat_id, title)
@@ -449,13 +471,18 @@ class ChatTUI:
                 try:
                     while True:
                         msg_type, data = self.stream_queue.get_nowait()
-                        if msg_type == "chunk":
+                        if msg_type in ["content", "reasoning"]:
                             if not self.messages or self.messages[-1]['role'] != 'assistant':
-                                self.messages.append({'role': 'assistant', 'content': '', 'provider': self.provider, 'model': self.model})
-                            self.messages[-1]['content'] += data
+                                self.messages.append({'role': 'assistant', 'content': '', 'reasoning': '', 'provider': self.provider, 'model': self.model})
+                            
+                            if msg_type == "reasoning":
+                                self.messages[-1]['reasoning'] += data
+                            else:
+                                self.messages[-1]['content'] += data
                         elif msg_type == "done":
                             self.is_thinking = False
-                            self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'], self.provider, self.model)
+                            last_msg = self.messages[-1]
+                            self.db.add_message(self.current_chat_id, 'assistant', last_msg['content'], self.provider, self.model, reasoning=last_msg.get('reasoning'))
                             if len(self.messages) == 2: # First exchange
                                 threading.Thread(target=self.title_worker, args=(self.current_chat_id, self.messages[0]['content']), daemon=True).start()
                         elif msg_type == "title_updated":
@@ -464,11 +491,12 @@ class ChatTUI:
                             self.is_thinking = False
                             if self.messages and self.messages[-1]['role'] == 'assistant':
                                 self.messages[-1]['content'] += " [Cancelled]"
-                                self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'], self.provider, self.model)
+                                last_msg = self.messages[-1]
+                                self.db.add_message(self.current_chat_id, 'assistant', last_msg['content'], self.provider, self.model, reasoning=last_msg.get('reasoning'))
                         elif msg_type == "error":
                             self.is_thinking = False
                             error_msg = f"Error: {data}"
-                            self.messages.append({'role': 'assistant', 'content': error_msg, 'provider': self.provider, 'model': self.model})
+                            self.messages.append({'role': 'assistant', 'content': error_msg, 'reasoning': '', 'provider': self.provider, 'model': self.model})
                             self.db.add_message(self.current_chat_id, 'assistant', error_msg, self.provider, self.model)
                 except queue.Empty:
                     pass
