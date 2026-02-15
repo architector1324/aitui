@@ -299,6 +299,20 @@ class ChatTUI:
         except Exception as e:
             self.stream_queue.put(("error", str(e)))
 
+    def title_worker(self, chat_id, first_message):
+        try:
+            prompt = f"Create a very short title (max 5 words) for a conversation that starts with: '{first_message}'. Respond ONLY with the title text, no quotes or punctuation."
+            messages = [{"role": "user", "content": prompt}]
+            title = ""
+            for chunk in api.call_llm(self.provider, self.config, messages):
+                title += chunk
+            title = title.strip().strip('"').strip("'").strip()
+            if title:
+                self.db.update_chat_title(chat_id, title)
+                self.stream_queue.put(("title_updated", None))
+        except Exception:
+            pass
+
     def run(self):
         while True:
             try:
@@ -313,10 +327,10 @@ class ChatTUI:
                         elif msg_type == "done":
                             self.is_thinking = False
                             self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'])
-                            if len(self.messages) <= 2: # First exchange
-                                title = self.messages[0]['content'][:20]
-                                self.db.update_chat_title(self.current_chat_id, title)
-                                self.refresh_chats()
+                            if len(self.messages) == 2: # First exchange
+                                threading.Thread(target=self.title_worker, args=(self.current_chat_id, self.messages[0]['content']), daemon=True).start()
+                        elif msg_type == "title_updated":
+                            self.refresh_chats()
                         elif msg_type == "cancelled":
                             self.is_thinking = False
                             if self.messages and self.messages[-1]['role'] == 'assistant':
@@ -332,16 +346,17 @@ class ChatTUI:
 
                 self.draw_all()
                 
-                ch = self.input_win.getch()
-                if ch == -1:
+                try:
+                    ch = self.input_win.get_wch()
+                except curses.error:
                     # Check if we should re-enable auto-scroll if user scrolled to bottom
                     # This is handled in draw_messages logic mostly, but we can be explicit
                     curses.napms(10)
                     continue
                 
-                if ch == 27: # Esc
+                if ch == '\x1b': # Esc
                     if self.show_confirm("Exit application?"): break
-                elif ch == 9: # Tab
+                elif ch == '\t': # Tab
                     if self.show_sidebar:
                         self.focus = "sidebar" if self.focus == "input" else "input"
                     else:
@@ -368,18 +383,18 @@ class ChatTUI:
                     curses.update_lines_cols()
                     self.setup_windows()
                     self.draw_all()
-                elif ch == 2: # Ctrl+B
+                elif ch == '\x02': # Ctrl+B
                     self.show_sidebar = not self.show_sidebar
                     if not self.show_sidebar: self.focus = "input"
                     self.setup_windows()
-                elif ch == 8: # Ctrl+H
+                elif ch == '\x08': # Ctrl+H
                     self.show_help()
-                elif ch == 14: # Ctrl+N
+                elif ch == '\x0e': # Ctrl+N
                     self.current_chat_id = self.db.create_chat(self.provider, self.model)
                     self.input_text = ""
                     self.cursor_pos = 0
                     self.refresh_chats()
-                elif ch == 4: # Ctrl+D
+                elif ch == '\x04': # Ctrl+D
                     target_id = self.chats[self.sidebar_idx]['id'] if self.focus == "sidebar" else self.current_chat_id
                     if target_id and self.show_confirm("Delete this chat?"):
                         self.db.delete_chat(target_id)
@@ -387,7 +402,7 @@ class ChatTUI:
                         self.refresh_chats()
                 
                 elif self.focus == "input":
-                    if ch in [10, 13]: # Enter
+                    if ch in ['\n', '\r', 10, 13]: # Enter
                         if self.input_text.strip() and not self.is_thinking:
                             user_text = self.input_text.strip()
                             self.db.add_message(self.current_chat_id, 'user', user_text)
@@ -399,7 +414,7 @@ class ChatTUI:
                             
                             threading.Thread(target=self.api_worker, args=(self.messages,), daemon=True).start()
                             
-                    elif ch in [curses.KEY_BACKSPACE, 127, 8]:
+                    elif ch in [curses.KEY_BACKSPACE, '\x7f', '\x08', 127, 8]:
                         if self.cursor_pos > 0:
                             self.input_text = self.input_text[:self.cursor_pos-1] + self.input_text[self.cursor_pos:]
                             self.cursor_pos -= 1
@@ -414,8 +429,8 @@ class ChatTUI:
                         self.cursor_pos = 0
                     elif ch == curses.KEY_END:
                         self.cursor_pos = len(self.input_text)
-                    elif 32 <= ch <= 126: # ASCII
-                        self.input_text = self.input_text[:self.cursor_pos] + chr(ch) + self.input_text[self.cursor_pos:]
+                    elif isinstance(ch, str) and ch.isprintable():
+                        self.input_text = self.input_text[:self.cursor_pos] + ch + self.input_text[self.cursor_pos:]
                         self.cursor_pos += 1
                 
                 elif self.focus == "sidebar":
@@ -423,7 +438,7 @@ class ChatTUI:
                         self.sidebar_idx = max(0, self.sidebar_idx - 1)
                     elif ch == curses.KEY_DOWN:
                         self.sidebar_idx = min(len(self.chats) - 1, self.sidebar_idx + 1)
-                    elif ch in [10, 13]: # Enter
+                    elif ch in ['\n', '\r', 10, 13]: # Enter
                         if self.chats:
                             self.current_chat_id = self.chats[self.sidebar_idx]['id']
                             self.messages = [dict(m) for m in self.db.get_messages(self.current_chat_id)]

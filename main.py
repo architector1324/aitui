@@ -1,11 +1,14 @@
 import argparse
 import yaml
 import curses
+import locale
 from db import Database
 import os
 from tui import ChatTUI
 
 def main():
+    # Set locale for UTF-8 support
+    locale.setlocale(locale.LC_ALL, '')
     # Set ESCDELAY before curses initialization for better responsiveness
     os.environ.setdefault('ESCDELAY', '25')
     parser = argparse.ArgumentParser(description="Minimalist TUI Chat Bot")
