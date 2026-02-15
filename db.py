@@ -22,6 +22,7 @@ class Database:
             chat_id INTEGER NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
             content TEXT NOT NULL,
+            model TEXT,
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
         )""")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
@@ -40,14 +41,14 @@ class Database:
 
     def get_messages(self, chat_id):
         return self.conn.execute(
-            "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id ASC",
+            "SELECT role, content, model FROM messages WHERE chat_id = ? ORDER BY id ASC",
             (chat_id,)
         ).fetchall()
 
-    def add_message(self, chat_id, role, content):
+    def add_message(self, chat_id, role, content, model):
         self.conn.execute(
-            "INSERT INTO messages (chat_id, role, content) VALUES (?, ?, ?)",
-            (chat_id, role, content)
+            "INSERT INTO messages (chat_id, role, content, model) VALUES (?, ?, ?, ?)",
+            (chat_id, role, content, model)
         )
         self.conn.commit()
 

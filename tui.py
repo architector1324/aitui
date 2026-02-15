@@ -153,7 +153,8 @@ class ChatTUI:
                 header = "User"
                 header_x = margin + max_msg_w - len(header)
             else:
-                header = f"{self.model}"
+                model_name = msg.get('model') or self.model
+                header = f"{model_name}"
                 header_x = margin
             
             all_lines.append((header, header_x, color, True))
@@ -427,11 +428,11 @@ class ChatTUI:
                         msg_type, data = self.stream_queue.get_nowait()
                         if msg_type == "chunk":
                             if not self.messages or self.messages[-1]['role'] != 'assistant':
-                                self.messages.append({'role': 'assistant', 'content': ''})
+                                self.messages.append({'role': 'assistant', 'content': '', 'model': self.model})
                             self.messages[-1]['content'] += data
                         elif msg_type == "done":
                             self.is_thinking = False
-                            self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'])
+                            self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'], self.model)
                             if len(self.messages) == 2: # First exchange
                                 threading.Thread(target=self.title_worker, args=(self.current_chat_id, self.messages[0]['content']), daemon=True).start()
                         elif msg_type == "title_updated":
@@ -440,12 +441,12 @@ class ChatTUI:
                             self.is_thinking = False
                             if self.messages and self.messages[-1]['role'] == 'assistant':
                                 self.messages[-1]['content'] += " [Cancelled]"
-                                self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'])
+                                self.db.add_message(self.current_chat_id, 'assistant', self.messages[-1]['content'], self.model)
                         elif msg_type == "error":
                             self.is_thinking = False
                             error_msg = f"Error: {data}"
-                            self.messages.append({'role': 'assistant', 'content': error_msg})
-                            self.db.add_message(self.current_chat_id, 'assistant', error_msg)
+                            self.messages.append({'role': 'assistant', 'content': error_msg, 'model': self.model})
+                            self.db.add_message(self.current_chat_id, 'assistant', error_msg, self.model)
                 except queue.Empty:
                     pass
 
@@ -512,8 +513,8 @@ class ChatTUI:
                     if ch in ['\n', '\r', 10, 13]: # Enter
                         if self.input_text.strip() and not self.is_thinking:
                             user_text = self.input_text.strip()
-                            self.db.add_message(self.current_chat_id, 'user', user_text)
-                            self.messages.append({'role': 'user', 'content': user_text})
+                            self.db.add_message(self.current_chat_id, 'user', user_text, self.model)
+                            self.messages.append({'role': 'user', 'content': user_text, 'model': self.model})
                             self.input_text = ""
                             self.cursor_pos = 0
                             self.is_thinking = True
